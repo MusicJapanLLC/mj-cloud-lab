@@ -1,0 +1,73 @@
+name: Music Japan | Free Linux Cloud Compute
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - cloud/trigger.txt
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mj-cloud-zero-credit
+  cancel-in-progress: true
+
+jobs:
+  cloud-linux-a:
+    name: Linux A — actual VM hardware
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Prove actual remote VM hardware
+        run: |
+          python3 cloud/runner_probe.py
+          python3 -m py_compile cloud/runner_probe.py cloud/runner_inference.py
+
+  cloud-linux-b:
+    name: Linux B — local model inference on cloud CPU
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify this VM independently
+        run: python3 cloud/runner_probe.py
+      - name: Download SHA-pinned public llama.cpp Linux binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p downloaded/bin
+          curl -fsSL --retry 3 --connect-timeout 20 --max-time 150 \
+            "https://github.com/ggml-org/llama.cpp/releases/download/b11714/llama-b11714-bin-ubuntu-x64.tar.gz" \
+            -o downloaded/llama-linux.tar.gz
+          printf '%s  %s\n' \
+            "639059a1106e706810486285ec6d1d92c961f3f920ef78bbdd1ee359428679d0" \
+            "downloaded/llama-linux.tar.gz" | sha256sum -c -
+          tar -xzf downloaded/llama-linux.tar.gz -C downloaded/bin
+          find downloaded/bin -name llama-server -type f -exec chmod +x {} \;
+      - name: Download SHA-pinned Apache-2.0 Qwen GGUF weights
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --connect-timeout 20 --max-time 260 \
+            "https://huggingface.co/ggml-org/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q4_0.gguf" \
+            -o downloaded/Qwen3.5-0.8B-Q4_0.gguf
+          printf '%s  %s\n' \
+            "57d1997790d1744fba5b40a7317df71ea5e2acee28c47e78f0cce39c0703f8cf" \
+            "downloaded/Qwen3.5-0.8B-Q4_0.gguf" | sha256sum -c -
+      - name: Execute real LLM inference in the remote cloud VM
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="$(find downloaded/bin -name llama-server -type f -print -quit)"
+          test -n "$BIN"
+          python3 cloud/runner_inference.py \
+            --binary "$BIN" \
+            --weights downloaded/Qwen3.5-0.8B-Q4_0.gguf
